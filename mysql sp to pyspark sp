@@ -1,0 +1,948 @@
+MYSQL STORED PROCEDURE ==
+USE [RSRpt]
+GO
+/****** Object:  StoredProcedure [GIV3].[spDMDlyInsRptSPSalesEndorsement]    Script Date: 6/6/2025 4:31:50 pm ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ 
+ALTER   PROCEDURE [GIV3].[spDMDlyInsRptSPSalesEndorsement]  
+    @Rundate datetime = null
+AS
+-- =============================================
+-- Author:      Jose Martin Victor
+-- Create date: 2012-04-17
+-- Description: To extract Endorsement Special Products Closed by Staff and insert into RptSPSales
+/*
+    Mod    Date      By                  Description
+    ------ --------- ------------------- ------------------------
+    31-01-2013      Thazin              Added 4 columns : cancelled date, Days from issues, Cancellation Type, Cancellation Reason
+    01-03-2013      Thazin              To remove prouduct filer : [LIV2].[RptCustomFilter]
+    06-09-2013      Thazin              To use T_QUOTE_INFO instead of T_AGT_VOUCHER for campaign code
+    02-07-2014      Thazin              To include Customer Name and NRIC
+    16-12-2014      Thazin              To add " Previous Policy Number" and "Replace Reason" columns
+    04-12-2015      Lilie               to extract from TS (agent_cate = 18) instead of DIRECT
+*/
+-- =============================================
+BEGIN
+ 
+    SET NOCOUNT ON;
+ 
+    if @Rundate is null set @Rundate = getdate()
+ 
+   
+    Select Distinct x.StaffCode, x.UserID,  x.Name, x.Dept As DeptCode, UPPER(x.DeptName) As DeptName, x.Section
+    INTO #temp_commemp
+    From (
+    Select a.StaffCode, a.UserID, a.Name, a.Dept As Dept, d.DeptName As DeptName, a.Section
+    From EMPLOYEE.commemp a (nolock)
+    LEFT OUTER JOIN EMPLOYEE.CommDeptsRefNew d On a.Dept = d.NewDept
+    UNION ALL
+    Select a.StaffCode, a.UserID, a.Name, a.Dept As Dept, d.DeptName As DeptName, a.Section
+    From EMPLOYEE.CommResigned a (nolock)
+    LEFT OUTER JOIN EMPLOYEE.CommDeptsRefNew d On a.Dept = d.NewDept
+    ) x
+   
+   
+    CREATE INDEX IX_#temp_commemp_UserID ON #temp_commemp (UserID)
+    ----------------------------------------------------
+    -- Modified by Thazin on 31-01-2013
+    /*
+    Select pol.PolicyID, pol.PolicyNO, pol.ProductCode, pol.IssueDate, pol.PolicyEffectiveDate, pol.PolicyExpiryDate, tpyl.delta_py_app As PremWithGST
+            , CASE WHEN endo.[Type_Id] in (21,43,81) THEN  '4'
+                ELSE '3' END BizType
+            , pol.AgreementID, cf.RETURNVALUE
+          ,endo.ENDO_ID, endo.NEXT_ENDO_ID, endo.ENDO_CODE, Endo.Issue_Date EndorsementDate
+    into #temp_tmpPol
+    From GIV3.bv_Policy pol
+    INNER JOIN GIV3.T_Gedo_Endorsement endo on pol.PolicyId = endo.Policy_Id
+    INNER JOIN [LIV2].[RptCustomFilter] cf  ON cf.FIELDVALUE = pol.ProductCode AND cf.PURPOSE = 'SALES_ON_SPLPRODUCTS'
+    LEFT OUTER JOIN GIV3.T_POLICY_YEAR_log tpyl ON pol.PolicyId = tpyl.Policy_Id AND endo.next_endo_id = tpyl.Endo_id AND tpyl.backup_flag = 1
+    WHERE   DATEDIFF(dd,IssueDate, @RunDate) = 0
+    AND endo.Status_Id = 300
+    */
+    Select pol.PolicyID, pol.PolicyNO, pol.ProductCode, pol.IssueDate, pol.PolicyEffectiveDate, pol.PolicyExpiryDate
+        , tpyl.delta_py_app As PremWithGST, tpyl.delta_py_abp As PremWithoutGst
+        , CASE WHEN endo.[Type_Id] in (21,43,81) THEN  '4'
+            ELSE '3' END BizType
+        , pol.AgreementID, pol.ProductName --cf.RETURNVALUE
+        ,CancelledDate = endo.Insert_Time
+        ,endo.ENDO_ID, endo.NEXT_ENDO_ID, endo.ENDO_CODE, Endo.Issue_Date EndorsementDate
+        ,CancelTypeID = endo.cancel_type_id
+        ,CancelTypeDesc = (case when endo.cancel_type_id = 1 then 'Cancellation from Inception'
+                                when endo.cancel_type_id = 2 then 'Cancellation Midway with Cancellation Fee'
+                                when endo.cancel_type_id = 3 then 'Cancellation Midway' else cast(endo.cancel_type_id as varchar) end)
+        ,CancelReasonID = endo.cancel_reason_id
+        ,CancelReasonDesc = (select reason_name from giv3.T_GEDO_CANCEL_REASON where reason_id = endo.cancel_reason_id)
+        ,OperId = CASE WHEN endo.uw_oper_id IS NULL THEN endo.entry_oper_id ELSE endo.uw_oper_id END
+        , gpi.PREVIOUS_POLICY_NO PreviousPolicyNo, gpi.REWRITE_REASON ReplaceReason -- Added by Thazin on 16-12-2014
+        , (Case When gpi.REWRITE_REASON = 1 Then 'Replace from Cancellation'  
+            When gpi.REWRITE_REASON = 2 Then 'Replace from Renewal'
+            Else NULL End) ReplaceReasonDesc
+    into #temp_tmpPol
+    From GIV3.bv_Policy pol
+    INNER JOIN GIV3.T_Gedo_Endorsement endo on pol.PolicyId = endo.Policy_Id
+    --INNER JOIN [LIV2].[RptCustomFilter] cf  ON cf.FIELDVALUE = pol.ProductCode AND cf.PURPOSE = 'SALES_ON_SPLPRODUCTS' -- Thazin on 01-03-2013
+    LEFT OUTER JOIN GIV3.T_POLICY_YEAR_log tpyl ON pol.PolicyId = tpyl.Policy_Id AND endo.next_endo_id = tpyl.Endo_id AND tpyl.backup_flag = 1
+    LEFT OUTER JOIN GIV3.T_GEN_POLICY_INFO gpi on pol.PolicyId = gpi.Policy_Id-- Added by Thazin on 16-12-2014
+    WHERE   DATEDIFF(dd,endo.Issue_date, @RunDate) = 1
+    And endo.Type_id IN (-1, 11, 23, 31, 32, 51, 61, 62, 71, 80, 82, 92, 21, 43, 81)
+    AND endo.Status_Id = 300
+ 
+    CREATE INDEX IX_tmpPol_PolicyID ON #temp_tmpPol (PolicyID)
+    CREATE INDEX IX_tmpPol_AgreementID ON #temp_tmpPol (AgreementID)
+    ----------------------------------------------------
+ 
+    -- Comment by Thazin on 31-01-2013 - will use bv_Introducer instead of temp table
+    /*
+     select qil.Policy_Id,
+            IntroducerCode  = (CASE WHEN v.INTRODUCER_CODE NOT LIKE 'S%' THEN 'S' + v.INTRODUCER_CODE ELSE  v.INTRODUCER_CODE END),
+            IntroducerName  = UPPER(v.PARTY_NAME)
+     Into #temp_introducer      
+     from #temp_tmpPol pol
+     inner join giv3.T_Quote_Info_Log qil on pol.NEXT_ENDO_ID = qil.ENDO_ID
+     inner join GIV3.V_PTM_INTRODUCER v On qil.introducer_ptyr_id = v.ptyr_id
+    ----------------------------------------------------
+    */
+ 
+    SELECT *, ROW = ROW_NUMBER() OVER(PARTITION BY X.POLICYID  ORDER BY X.COLLECTDATE DESC)
+    Into #temp_OSPremium
+    FROM (
+        SELECT
+        PolicyId        = a.POLICY_ID,
+        EndoId          = MAX(p.Endo_Id),
+        AmtCollected    = SUM(CASE WHEN a.INSTANCE_FEE_CATE=2 THEN -1 ELSE 1 END * (a.AMOUNT - a.BALANCE)),
+        AmtOutstanding  = SUM(CASE WHEN a.INSTANCE_FEE_CATE=2 THEN -1 ELSE 1 END * a.BALANCE),
+        CollectDate     = MAX(a.UPDATE_TIME),
+        PayMode         = a.PAY_MODE
+        FROM GIV3.T_BCP_FEE_DETAIL a (nolock),  GIV3.T_BCP_FEE b (nolock), #temp_tmpPol p
+        WHERE a.FEE_TYPE = '1001101'  -- prem
+        AND a.TRANS_ID = b.TRANS_ID
+        AND p.PolicyID = a.POLICY_ID
+        AND b.ENDO_ID IS NOT NULL  -- endo
+        GROUP BY a.POLICY_ID, a.PAY_MODE
+        ) x
+   
+           
+    ----------------------------------------------
+ 
+    DELETE FROM GIV3.RptSPSalesEndorsement WHERE DATEDIFF(dd, RunDate, @RunDate) = 0
+ 
+    INSERT INTO GIV3.RptSPSalesEndorsement(PolicyID,PolicyNo,DeptCode,DeptName,ProductCode,ProductName,IntroducerCode,IntroducerName,AgentName,AgentCode
+        ,IssueDate,EffDate,ExpDate,CampaignCode,Premium,PremWithoutGST,OSPremium,RenewedCount,BizTypeName,PaymentMode
+        ,RunDate,Section,EndoID,EndoDate,BizType,CancelledDate,DaysIssue,CancelTypeID,CancelTypeDesc,CancelReasonID,CancelReasonDesc
+        ,PHNRIC, PHName
+        ,PreviousPolicyNo, ReplaceReason,ReplaceReasonDesc)
+    SELECT DISTINCT  
+    POLICY_ID       = pol.PolicyId,
+    POLICY_NO       = pol.PolicyNO,  
+    DEPT_CODE       = emp.DeptCode,  
+    DEPT_NAME       = emp.DeptName,
+    PRODUCT_CODE    = (CASE WHEN pol.ProductCode IN ('GPD') THEN 'PAID' ELSE pol.ProductCode END),  
+    --PRODUCT_NAME  = pol.RETURNVALUE,  -- Modified by Thazion on 01-03-2013
+    PRODUCT_NAME    = pol.ProductName,
+    INTRODUCER_CODE = intr.IntroducerCode,  
+    INTRODUCER_NAME = intr.IntroducerName,  
+    AGENT_NAME      = agt.AgentName,  
+    AGENT_CODE      = agt.AgentCode,  
+    ISSUE_DATE      = pol.IssueDate,  
+    EFF_DATE        = pol.PolicyEffectiveDate,
+    EXP_DATE        = pol.PolicyExpiryDate,
+    CAMPAIGN_CODE   = cp.CAMPAIGN_CODE,
+    PREMIUM         = pol.PremWithGST,  
+    -- Added by Thazin on 31-01-2013
+    PREMWITHOUTGST  = pol.PremWithoutGst,
+    OSPREMIUM       = balprem.AmtOutstanding,
+    RENEWED_COUNT   = (CASE WHEN pol.BizType = '2' THEN 1 ELSE 0 END) ,  ---- Renewal
+    BizTypeName = (Case WHEN pol.BizType = '3' THEN 'ENDORSEMENT'
+                WHEN pol.BizType = '4' THEN 'CANCELLATION'
+               ELSE '' END),
+    -- Modified by Thazin on 31-01-2013
+    --PAYMENT_MODE  = (Select x.CodeTableDesc from giv3.bv_CodeDescription x where x.CodeTableName = 'T_BCP_CFG_PAY_MODE' and x.CodeTableID = balprem.PayMode),
+    PAYMENT_MODE    = (Select x.CodeTableDesc from giv3.bv_CodeDescription x where x.CodeTableName = 'T_BCP_CFG_PAY_MODE' and x.CodeTableID = Convert(varchar(10),balprem.PayMode)), --Add
+    RUNDATE         = @RunDate,
+    SECTION         = emp.Section,
+    ENDOID          = pol.Endo_Id,
+    ENDODATE        = pol.EndorsementDate,
+    BIZTYPE         = pol.BizType,
+    -- Added by Thazin on 31-01-2013
+    CancelledDate   = pol.CancelledDate,
+    DaysIssue       = DateDiff(dd,pol.IssueDate,pol.CancelledDate),
+    CancelTypeID    = pol.CancelTypeID , CancelTypeDesc = pol.CancelTypeDesc,
+    CancelReasonID  = pol.CancelReasonID, CancelReasonDesc  = pol.CancelReasonDesc,
+    PHNRIC          = (case when pt.ptycate = 0 then indi.NRIC else co.RegNo end), -- Added by Thazin on 02-07-2014
+    PHNAME          = (case when pt.ptycate = 0 then indi.name else co.name end),
+    PreviousPolicyNo = pol.PreviousPolicyNo, -- Added by Thazin on 16-12-2014
+    ReplaceReason   = pol.ReplaceReason,
+    ReplaceReasonDesc = pol.ReplaceReasonDesc
+    FROM #temp_tmpPol pol  
+        INNER JOIN GIV3.bv_Agent agt (nolock) ON agt.AgreementId = pol.AgreementID
+        -- Added by Thazin on 02-07-2014
+        INNER JOIN GIV3.T_POLICY_GEN_CUST cust on cust.policy_id = pol.policyid and cust.payer_flag = 1
+        INNER JOIN GIV3.bv_pty pt ON cust.Party_Id = pt.ptyid
+        LEFT OUTER JOIN GIV3.bv_indivcustomer indi on indi.ptyid = pt.ptyid
+        LEFT OUTER JOIN GIV3.bv_CoCustomer co on co.ptyid =  pt.ptyid    
+        -- Modified by Thazin on 31-01-2013
+        --INNER JOIN #temp_introducer intr On intr.Policy_ID = pol.PolicyID
+        --LEFT OUTER JOIN #temp_commemp emp ON emp.UserID = intr.IntroducerCode
+        INNER JOIN GIV3.bv_Introducer intr ON pol.PolicyId = intr.PolicyId
+        LEFT OUTER JOIN #temp_commemp emp ON emp.StaffCode = intr.IntroducerCode
+        LEFT OUTER JOIN #temp_OSPremium balprem ON pol.PolicyID = balprem.PolicyID AND balprem.ROW = 1
+        --Modified by Thazin on 06-09-2013
+        --LEFT OUTER JOIN GIV3.T_AGT_VOUCHER cp ON cp.POLICY_ID = pol.PolicyId
+        LEFT OUTER JOIN GIV3.T_QUOTE_INFO cp on cp.Policy_Id = pol.PolicyId
+    UNION
+    ---- **** RETRIEVE HOME, PA, FOREIGN MAID UNDER DIRECT AND DEPT IN (IL,DS AND DB)  
+    SELECT DISTINCT  
+    POLICY_ID       = pol.PolicyId,
+    POLICY_NO       = pol.PolicyNO,  
+    DEPT_CODE       = emp.DeptCode,  
+    DEPT_NAME       = emp.DeptName,
+    PRODUCT_CODE    = (CASE WHEN pol.ProductCode IN ('GPD') THEN 'PAID' ELSE pol.ProductCode END),
+    --PRODUCT_NAME  = pol.RETURNVALUE,  -- Modified by Thazion on 01-03-2013
+    PRODUCT_NAME    = pol.ProductName,  
+    INTRODUCER_CODE = intr.IntroducerCode,  
+    INTRODUCER_NAME = intr.IntroducerName,
+    AGENT_NAME      = agt.AgentName,  
+    AGENT_CODE      = agt.AgentCode,  
+    ISSUE_DATE      = pol.IssueDate,  
+    EFF_DATE        = pol.PolicyEffectiveDate,
+    EXP_DATE        = pol.PolicyExpiryDate,
+    CAMPAIGN_CODE   = cp.CAMPAIGN_CODE,
+    PREMIUM         = pol.PremWithGST,  
+    -- Added by Thazin on 31-01-2013
+    PREMWITHOUTGST  = pol.PremWithoutGst,
+    OSPREMIUM       = balprem.AmtOutstanding,
+    RENEWED_COUNT   = (CASE WHEN pol.BizType = '2' THEN 1 ELSE 0 END),   ---- Renewal
+    BizTypeName = (Case WHEN pol.BizType = '3' THEN 'ENDORSEMENT'
+                WHEN pol.BizType = '4' THEN 'CANCELLATION'
+               ELSE '' END),
+    -- Modified by Thazin on 31-01-2013
+    --PAYMENT_MODE  = (Select x.CodeTableDesc from giv3.bv_CodeDescription x where x.CodeTableName = 'T_BCP_CFG_PAY_MODE' and x.CodeTableID = balprem.PayMode), --Add
+    PAYMENT_MODE    = (Select x.CodeTableDesc from giv3.bv_CodeDescription x where x.CodeTableName = 'T_BCP_CFG_PAY_MODE' and x.CodeTableID = Convert(Varchar(10),balprem.PayMode)),
+    RUNDATE         = @RunDate,
+    SECTION         = emp.Section,
+    ENDOID          = pol.Endo_Id,
+    ENDODATE        = pol.EndorsementDate,
+    BIZTYPE         = pol.BizType,
+    -- Added by Thazin on 31-01-2013
+    CancelledDate   = pol.CancelledDate,
+    DaysIssue       = DateDiff(dd,pol.IssueDate,pol.CancelledDate),
+    CancelTypeID    = pol.CancelTypeID , CancelTypeDesc = pol.CancelTypeDesc,
+    CancelReasonID  = pol.CancelReasonID, CancelReasonDesc  = pol.CancelReasonDesc,
+    PHNRIC          = (case when pt.ptycate = 0 then indi.NRIC else co.RegNo end), -- Added by Thazin on 02-07-2014
+    PHNAME          = (case when pt.ptycate = 0 then indi.name else co.name end),
+    PreviousPolicyNo = pol.PreviousPolicyNo, -- Added by Thazin on 16-12-2014
+    ReplaceReason   = pol.ReplaceReason,
+    ReplaceReasonDesc = pol.ReplaceReasonDesc
+    FROM #temp_tmpPol pol
+        INNER JOIN GIV3.bv_Agent agt  (nolock) ON agt.AgreementId = pol.AgreementID
+        -- Added by Thazin on 02-07-2014
+        INNER JOIN GIV3.T_POLICY_GEN_CUST cust on cust.policy_id = pol.policyid and cust.payer_flag = 1
+        INNER JOIN GIV3.bv_pty pt ON cust.Party_Id = pt.ptyid
+        LEFT OUTER JOIN GIV3.bv_indivcustomer indi on indi.ptyid = pt.ptyid
+        LEFT OUTER JOIN GIV3.bv_CoCustomer co on co.ptyid =  pt.ptyid    
+        -- Modified by Thazin on 31-03-2013
+        -- LEFT OUTER JOIN #temp_introducer intr  ON intr.Policy_ID = pol.PolicyID  
+        --LEFT OUTER JOIN #temp_commemp emp ON emp.UserID = intr.IntroducerCode
+        LEFT OUTER JOIN GIV3.bv_Introducer intr ON pol.PolicyId = intr.PolicyId
+        LEFT OUTER JOIN #temp_commemp emp ON emp.StaffCode = intr.IntroducerCode
+        LEFT OUTER JOIN #temp_OSPremium balprem (nolock) ON pol.PolicyID = balprem.PolicyID  AND balprem.ROW = 1
+        --Modified by Thazin on 06-09-2013
+        --LEFT OUTER JOIN GIV3.T_AGT_VOUCHER cp ON cp.POLICY_ID = pol.PolicyId
+        LEFT OUTER JOIN GIV3.T_QUOTE_INFO cp on cp.Policy_Id = pol.PolicyId
+        CROSS APPLY GIV3.fnAgtGetCateGroup(1,agt.AgentCate,agt.AgentCode,agt.TeamCode,agt.BranchCode) fnagt
+    WHERE fnagt.AgentCateGroup = 'TS' --fnagt.AgentCateGroup = 'DI' ---- DIRECT        
+    AND SUBSTRING(agt.TeamCode,1,2) IN ('DS','DB')  ---- ***        
+       
+END
+ 
+ 
+CONVERTED PYSPARK SCRIPT====
+
+import sys
+import os
+import json
+import argparse
+from pyspark.sql import SparkSession, SQLContext
+from pyspark.context import SparkContext
+from pyspark.conf import SparkConf
+from pyspark.sql.types import *
+from datetime import timedelta, datetime
+ 
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True, help = "Table config to be processed")
+ 
+args, unknown = parser.parse_known_args()
+args_config = args.config
+conf = json.loads(args_config.replace("'", '"'))
+ 
+# Use provided run_date or fallback to today's date
+run_date = conf.get("run_date", datetime.now().strftime('%Y-%m-%d'))
+ 
+print(f"Data Source: {conf['data_source']}, Target Table: {conf['target_table']}")
+ 
+# Configure Spark Session for Iceberg
+spark_configs_default = {
+    "spark.sql.autoBroadcastJoinThreshold" : "10485760",
+    "spark.sql.extensions" : "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+    "spark.sql.catalog.glue_catalog.catalog-impl" : "org.apache.iceberg.aws.glue.GlueCatalog",
+    "spark.sql.catalog.glue_catalog.io-impl" : "org.apache.iceberg.aws.s3.S3FileIO",
+    "spark.sql.legacy.parquet.int96RebaseModeInRead" : "CORRECTED",
+    "spark.sql.legacy.parquet.datetimeRebaseModeInRead" : "CORRECTED",
+    "spark.sql.iceberg.handle-timestamp-without-timezone" : "true",
+    "spark.sql.files.ignoreCorruptFiles" : "true",
+    "spark.sql.ansi.enabled" : "false"
+}
+spark_job_confs = spark_configs_default
+ 
+# Set spark configurations
+spark_conf = SparkConf().setAll(pairs=spark_job_confs.items())
+ 
+spark = SparkSession \
+    .builder \
+    .appName(f"tds-rpt-{conf['target_table']}") \
+    .config(conf=spark_conf) \
+    .config(f'spark.sql.catalog.{conf["CATALOG_NAME"]}',"org.apache.iceberg.spark.SparkCatalog") \
+    .config(f'spark.sql.catalog.{conf["CATALOG_NAME"]}.warehouse',f'{conf["WAREHOUSE_PATH"]}') \
+    .getOrCreate()
+ 
+print("Spark version:",spark.version)
+ 
+ 
+try:
+ 
+    spark.sql(f"""
+        SELECT DISTINCT
+            x.Staff_code,
+            x.User_id,
+            x.Name,
+            x.Dept AS Dept_code,
+            UPPER(x.Deptname) AS Dept_name,
+            x.Section
+        FROM (
+            SELECT
+                a.Staffcode AS staff_code,
+                a.Userid AS user_id,
+                a.Name,
+                a.Dept,
+                d.Deptname,
+                a.Section
+            FROM {conf['CATALOG_NAME']}.tl_enty_def.tb_commemp_hist a
+            LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_enty_def.tb_commemp_hist d
+                ON a.Dept = d.DeptName AND d.active_record_ind = 'Y'
+            WHERE a.active_record_ind = 'Y'  
+ 
+            UNION ALL
+ 
+            SELECT
+                a.Staffcode AS staff_code,
+                a.Userid AS user_id,
+                a.Name,
+                a.Dept,
+                d.Deptname,
+                a.Section
+            FROM {conf['CATALOG_NAME']}.tl_enty_def.tb_commresigned_hist a
+            LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_enty_def.tb_commemp_hist d
+                ON a.Dept = d.DeptName AND d.active_record_ind = 'Y'
+            WHERE a.active_record_ind = 'Y'  
+            and NOT EXISTS (
+                SELECT 1
+                FROM {conf['CATALOG_NAME']}.tl_enty_def.tb_commemp_hist x2
+                WHERE x2.Staffcode = a.Staffcode
+                AND x2.active_record_ind = 'Y'
+            )
+        ) x
+    """).createOrReplaceTempView("temp_commemp")
+   
+ 
+            #create bv_Agent
+    spark.sql(f"""
+        SELECT DISTINCT
+            a.agent_name,
+            a.agent_code,
+            a.agent_cate,
+            a.agent_cate_desc,
+            e.agreement_id,
+            f.TeamCode AS team_code,
+            f.Branch_code
+        FROM
+            {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_agt_agent_hist AS a
+        INNER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_agt_agreement_hist AS e
+            ON a.AGENT_ID = e.AGENT_ID
+        INNER JOIN (
+            SELECT
+                x.PARTY_ID as Team_pty_id,
+                x.DEPTTEAM_CODE as TeamCode,
+                x.Branch_code
+            FROM {conf['CATALOG_NAME']}.tl_ebgi_def.tb_v_agt_team_hist AS x
+            WHERE x.PARENT_TEAM_ID IS NOT NULL AND x.active_record_ind = 'Y'
+        ) AS f
+            ON e.PARTY_ID = f.Team_pty_id
+        INNER JOIN {conf['CATALOG_NAME']}.tl_ebli_def.tb_t_agent_hist AS h
+            ON a.AGENT_CODE = h.AGENT_CODE AND h.active_record_ind = 'Y'
+        WHERE a.RECRUIT_STATUS = '4' AND a.active_record_ind = 'Y' AND e.active_record_ind = 'Y'
+    """).createOrReplaceTempView("bv_Agent")
+   
+   
+ 
+ 
+    # create bv_policy
+    spark.sql(f"""
+        SELECT
+            tpg.record_eff_from_date,
+            tpg.record_eff_to_date,
+            tpg.quote_no
+            ,tpg.policy_id
+            ,tpg.policy_no
+            ,tppdt.product_code    
+            ,tppdt.product_name              
+            ,tppdt.cate_id as product_cate_id
+            ,tppdt.product_cate_name
+            ,tpg.Biz_type
+            ,tpg.policy_effective_date
+            ,tpg.policy_expiry_date  
+            ,tpg.sum_insured
+            ,tpg.issue_date
+            ,tpg.agreement_id        
+            ,tpg.renew_flag AS renewal_flag
+            ,tpg.policy_status as policy_status
+            ,(case when (tppdt.cate_id = 1) then 'Motor' when ((SUBSTRING(tppdt.product_code,1,1) = 'G') and (tppdt.cate_id <> 1)) then 'PLine' when (SUBSTRING(tppdt.product_code,1,1) = 'C') then 'CLine' else cast(tppdt.cate_id as STRING) end) AS Product_Cate_Type
+        FROM
+            {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_policy_general_hist tpg
+            LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_gen_policy_info_hist gpi
+                ON tpg.policy_id = gpi.policy_id
+                AND UPPER(gpi.field01) = 'FPL' AND gpi.active_record_ind = 'Y'
+            INNER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_product_general_hist tppdt
+                ON tpg.product_id = tppdt.master_product_id
+                AND COALESCE(gpi.sec_product_id, 0) = COALESCE(tppdt.derived_product_id, 0)  
+        WHERE
+            tpg.policy_status <> '1'
+            AND tpg.active_record_ind = 'Y'
+            AND tppdt.active_record_ind = 'Y'
+    """).createOrReplaceTempView('bv_policy')
+   
+ 
+        #create bv_Codedescription
+    spark.sql(f"""
+    SELECT
+        str_desc as Code_table_desc,
+        org_table as Code_table_name,
+        str_code as code_table_id
+        FROM {conf['CATALOG_NAME']}.rl_ebgi_gs.vw_v_code_desc
+    """).createOrReplaceTempView('bv_Codedescription')
+ 
+ 
+   
+ 
+            #create bv_Indivcustomer
+    spark.sql(f"""
+        SELECT
+            a.id_number as Nric
+           ,a.INDI_PARTY_NAME as Name
+           ,b.RESIDENCE_TELEPHONE as Home_tel
+           ,b.BUSINESS_TELEPHONE as Office_tel
+           ,b.HAND_PHONE as Mobile
+           ,b.EMAIL as Email
+           ,d.ADDRESS02 as Address1
+           ,d.ADDRESS01 as Address2
+           ,d.ADDRESS03 as Address3
+           ,d.ADDRESS04 as Address4
+           ,d.ADDRESS05 as Postal_code
+           ,a.PTY_ID as Pty_id
+           ,a.DATE_OF_BIRTH as Date_of_birth  
+        FROM
+        {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_indi_hist a
+        INNER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_ptyr_hist c ON a.PTY_ID = c.PTY_ID
+        LEFT OUTER JOIN (
+        SELECT
+            PTY_ID,
+            RESIDENCE_TELEPHONE,
+            HAND_PHONE,
+            BUSINESS_TELEPHONE,
+            EMAIL,
+            EMAL_FLAG,
+            ROW_NUMBER() OVER (PARTITION BY PTY_ID ORDER BY update_time DESC) as ROWNO
+        FROM
+            {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_other_contact_hist oc
+            WHERE oc.active_record_ind = 'Y'
+        ) b ON b.ROWNO = 1 AND b.PTY_ID = a.PTY_ID
+        LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_address_hist d ON d .ADDRESS_ID = c.ADDRESS_ID
+        WHERE a.active_record_ind = 'Y'
+        AND c.active_record_ind = 'Y'
+        AND d.active_record_ind = 'Y'
+    """).createOrReplaceTempView('bv_Indivcustomer')  
+   
+     #create bv_Cocustomer
+    spark.sql(f"""
+        SELECT
+            a.ORGANIZATION_ID_NUMBER as Reg_no
+            ,a.Name
+            ,b.RESIDENCE_TELEPHONE as Home_tel
+            ,b.BUSINESS_TELEPHONE as Office_tel
+            ,b.HAND_PHONE as Mobile
+            ,b.Email
+            ,d.ADDRESS02 as Address1
+            ,d.ADDRESS01 as Address2
+            ,d.ADDRESS03 as Address3
+            ,d.ADDRESS04 as Address4
+            ,d.ADDRESS05 as Postal_code
+            ,a.Pty_iD
+        FROM {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_org_hist a LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_other_contact_hist b ON b.PTY_ID = a.PTY_ID,
+        {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_ptyr_hist c LEFT OUTER JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_address_hist d ON d.ADDRESS_ID = c.ADDRESS_ID                                        
+        WHERE a.PTY_ID = c.PTY_ID
+        AND a.active_record_ind = 'Y'
+        AND b.active_record_ind = 'Y'
+        AND c.active_record_ind = 'Y'
+        AND d.active_record_ind = 'Y'
+    """).createOrReplaceTempView('bv_Cocustomer')
+   
+ 
+ 
+        #create bv_introducer
+    spark.sql(f"""
+        SELECT
+        qi.policy_id,
+        intr.introducer_code,
+        intr.PARTY_NAME AS Introducer_Name
+        FROM {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_quote_info_hist AS qi INNER JOIN
+             {conf['CATALOG_NAME']}.tl_ebgi_def.tb_v_ptm_introducer_hist AS intr ON qi.INTRODUCER_PTYR_ID = intr.PTYR_ID
+        WHERE qi.active_record_ind = 'Y'
+        AND intr.active_record_ind = 'Y'
+    """).createOrReplaceTempView('bv_introducer')      
+ 
+   
+    spark.sql(f"""
+        SELECT
+            pol.record_eff_from_date,
+            pol.record_eff_to_date,
+            pol.Policy_ID,
+            pol.Policy_NO,
+            pol.Product_Code,
+            pol.Issue_Date,
+            pol.Policy_Effective_Date,
+            pol.Policy_Expiry_Date,
+            tpyl.delta_py_app AS Prem_With_GST,
+            tpyl.delta_py_abp AS Prem_Without_Gst,
+            CASE
+                WHEN endo.endo_type_id IN (21, 43, 81) THEN 4
+                ELSE 3
+            END AS Biz_Type,
+            pol.Agreement_ID,
+            pol.Product_Name,
+            endo.Insert_Time AS Cancelled_Date,
+            endo.ENDO_ID,
+            endo.NEXT_ENDO_ID,
+            endo.ENDO_CODE,
+            endo.Issue_Date AS Endorsement_Date,
+            endo.cancel_type_id AS Cancel_Type_ID,
+            CASE
+                WHEN endo.cancel_type_id = 1 THEN 'Cancellation from Inception'
+                WHEN endo.cancel_type_id = 2 THEN 'Cancellation Midway with Cancellation Fee'
+                WHEN endo.cancel_type_id = 3 THEN 'Cancellation Midway'
+                ELSE CAST(endo.cancel_type_id AS STRING)
+            END AS Cancel_Type_Desc,
+            endo.cancel_reason_id AS Cancel_Reason_ID,
+            endo.Cancel_Reason_Desc,
+            CASE
+                WHEN endo.uw_oper_id IS NULL THEN endo.entry_oper_id
+                ELSE endo.uw_oper_id
+            END AS Oper_Id,
+            gpi.PREVIOUS_POLICY_NO AS Previous_Policy_No,
+            gpi.REWRITE_REASON AS Replace_Reason,
+            CASE
+                WHEN gpi.REWRITE_REASON = 1 THEN 'Replace from Cancellation'
+                WHEN gpi.REWRITE_REASON = 2 THEN 'Replace from Renewal'
+                ELSE NULL
+            END AS Replace_Reason_Desc
+        FROM bv_Policy pol
+        JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_gedo_endorsement_hist endo
+            ON pol.Policy_Id = endo.Policy_Id
+        LEFT JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_policy_year_log_hist tpyl
+            ON pol.Policy_Id = tpyl.Policy_Id
+            AND endo.next_endo_id = tpyl.Endo_id
+            AND tpyl.backup_flag = 1 AND tpyl.active_record_ind = 'Y'
+        LEFT JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_gen_policy_info_hist gpi
+            ON pol.Policy_Id = gpi.Policy_Id AND gpi.active_record_ind = 'Y'
+        WHERE endo.Issue_Date IS NOT NULL
+        AND endo.endo_type_id IN (-1, 11, 23, 31, 32, 51, 61, 62, 71, 80, 82, 92, 21, 43, 81)
+        AND endo.endo_status_id  = 300 AND endo.active_record_ind = 'Y'
+    """).createOrReplaceTempView("temp_tmpPol")
+   
+ 
+ 
+   
+    spark.sql(f"""
+        SELECT *
+        FROM (
+            SELECT
+                a.policy_id AS policy_id,
+                MAX(p.endo_id) AS endo_id,
+                SUM(
+                    CASE
+                        WHEN a.instance_fee_cate = 2 THEN -1
+                        ELSE 1
+                    END * (a.amount - a.balance)
+                ) AS amt_collected,
+                SUM(
+                    CASE
+                        WHEN a.instance_fee_cate = 2 THEN -1
+                        ELSE 1
+                    END * a.balance
+                ) AS amt_outstanding,
+                MAX(a.update_time) AS collect_date,
+                MAX_BY(a.pay_mode, a.update_time) AS pay_mode,  
+                ROW_NUMBER() OVER (PARTITION BY a.policy_id ORDER BY MAX(a.update_time) DESC) AS row
+            FROM {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_bcp_fee_detail_hist a
+            JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_bcp_fee_hist b
+                ON a.trans_id = b.trans_id
+            JOIN temp_tmpPol p
+                ON p.policy_id = a.policy_id
+            WHERE a.fee_type = '1001101'
+                AND b.endo_id IS NOT NULL
+                AND a.active_record_ind = 'Y'
+                AND b.active_record_ind = 'Y'
+            GROUP BY a.policy_id
+        ) final
+        WHERE row = 1
+    """).createOrReplaceTempView("temp_os_premium")
+ 
+ 
+ 
+    spark.sql(f"""
+        SELECT
+            agent_code AS agent_code,
+            agent_cate AS agent_cate,
+            team_code AS team_code,
+            Branch_code AS branch_code,
+ 
+            CASE
+                WHEN agent_cate IN ('0','12','15','2','3','7','9','17') THEN 'DI'
+                WHEN agent_cate IN ('1','1A','1B','1C','1D','25','26','27','28','29') THEN 'FC'
+                WHEN agent_cate IN ('10','11','13','8','19','20','21','22','23','24') THEN 'AG'
+                WHEN agent_cate IN ('14','6') THEN 'BK'
+                WHEN agent_cate IN ('4','5') THEN 'IA'
+                WHEN agent_cate LIKE 'I%' THEN 'IT'
+                WHEN agent_cate = '16' THEN 'BA'
+                WHEN agent_cate = '18' THEN 'TS'
+                ELSE NULL
+            END AS agent_cate_group,
+ 
+            CASE
+                WHEN agent_cate IN ('0','12','15','2','3','7','9','17') THEN 'DIRECT'
+                WHEN agent_cate IN ('1','1A','1B','1C','1D','25','26','27','28','29') THEN 'FINANCIAL CONSULTANT'
+                WHEN agent_cate IN ('10','11','13','8','19','20','21','22','23','24') THEN 'AGENT'
+                WHEN agent_cate IN ('14','6') THEN 'BROKER'
+                WHEN agent_cate IN ('4','5') THEN 'INSURANCE ADVISER'
+                WHEN agent_cate LIKE 'I%' THEN 'INTRODUCER'
+                WHEN agent_cate = '16' THEN 'BANCASSURANCE'
+                WHEN agent_cate = '18' THEN 'TELESALES'
+                ELSE 'OTHERS'
+            END AS agent_cate_group_desc,
+ 
+            CASE
+                WHEN agent_cate = '13' THEN 'MAID'
+                WHEN agent_cate = '12' AND agent_code LIKE '00000800%' THEN 'TRAVEL'
+                WHEN team_code = 'DB04' AND Branch_code = 'BR11' AND agent_cate = '7' THEN 'BR'
+                WHEN agent_code = '00000820015' THEN 'AF'
+                WHEN agent_cate = '6' THEN 'BROKER (FA)'
+                WHEN agent_cate IN ('15','17') THEN 'INSURANCE CONSULTANT'
+                WHEN UPPER(agent_cate) IN ('1','1A','1B','1C','1D','4','5','25','26','27','28','29') THEN 'TIED AGENT'
+                ELSE
+                    CASE
+                        WHEN agent_cate IN ('0','12','15','2','3','7','9','17') THEN 'DI'
+                        WHEN agent_cate IN ('1','1A','1B','1C','1D','25','26','27','28','29') THEN 'FC'
+                        WHEN agent_cate IN ('10','11','13','8','19','20','21','22','23','24') THEN 'AG'
+                        WHEN agent_cate IN ('14','6') THEN 'BK'
+                        WHEN agent_cate IN ('4','5') THEN 'IA'
+                        WHEN agent_cate LIKE 'I%' THEN 'IT'
+                        WHEN agent_cate = '16' THEN 'BA'
+                        WHEN agent_cate = '18' THEN 'TS'
+                        ELSE NULL
+                    END
+            END AS agent_cate_sub_group
+ 
+        FROM bv_Agent
+    """).createOrReplaceTempView("fnAgtGetCateGroup")
+ 
+ 
+ 
+ 
+    spark.sql(f"""
+ 
+        SELECT DISTINCT  
+            pol.record_eff_from_date,
+            pol.record_eff_to_date,
+            pol.policy_id AS policy_id,
+            pol.policy_no AS policy_no,  
+            emp.dept_code AS dept_code,  
+            emp.dept_name AS dept_name,
+            CASE
+                WHEN pol.product_code IN ('GPD') THEN 'PAID'
+                ELSE pol.product_code
+            END AS product_code,
+            pol.product_name AS product_name,
+            intr.introducer_code AS introducer_code,  
+            intr.introducer_name AS introducer_name,  
+            agt.agent_name AS agent_name,  
+            agt.agent_code AS agent_code,  
+            pol.issue_date AS issue_date,  
+            pol.policy_effective_date AS eff_date,
+            pol.policy_expiry_date AS exp_date,
+            cp.campaign_code AS campaign_code,
+            pol.prem_with_gst AS premium,
+            pol.prem_without_gst AS prem_without_gst,
+            balprem.amt_outstanding AS os_premium,
+            CASE
+                WHEN pol.biz_type = '2' THEN 1
+                ELSE 0
+            END AS renewed_count,
+            CASE
+                WHEN pol.biz_type = '3' THEN 'ENDORSEMENT'
+                WHEN pol.biz_type = '4' THEN 'CANCELLATION'
+                ELSE ''
+            END AS biz_type_name,
+            cx.Code_table_desc as PAYMENT_MODE,
+            DATE('{run_date}') AS Run_Date,
+            emp.section AS section,
+            pol.endo_id AS endo_id,
+            pol.endorsement_date AS endo_date,
+            pol.biz_type AS biz_type,
+            pol.cancelled_date AS cancelled_date,
+            DATEDIFF(DAY, pol.issue_date, pol.cancelled_date) AS days_issue,
+            pol.cancel_type_id AS cancel_type_id,
+            pol.cancel_type_desc AS cancel_type_desc,
+            pol.cancel_reason_id AS cancel_reason_id,
+            pol.cancel_reason_desc AS cancel_reason_desc,
+            CASE
+                WHEN pt.pty_category = 0 THEN indi.nric
+                ELSE co.reg_no
+            END AS PH_NRIC,
+            CASE
+                WHEN pt.pty_category = 0 THEN indi.name
+                ELSE co.name
+            END AS PH_Name,
+            pol.previous_policy_no AS previous_policy_no,
+            pol.replace_reason AS replace_reason,
+            pol.replace_reason_desc AS replace_reason_desc
+        FROM temp_tmpPol pol
+        JOIN bv_agent agt
+            ON agt.agreement_id = pol.agreement_id
+        JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_policy_gen_cust_hist cust
+            ON cust.policy_id = pol.policy_id AND cust.payer_flag = 1 AND cust.active_record_ind = 'Y'
+        JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_hist pt
+            ON cust.party_id = pt.pty_id AND pt.active_record_ind = 'Y'
+        LEFT JOIN bv_indivcustomer indi
+            ON indi.pty_id = pt.pty_id
+        LEFT JOIN bv_cocustomer co
+            ON co.pty_id = pt.pty_id
+        JOIN bv_introducer intr
+            ON pol.policy_id = intr.policy_id
+        LEFT JOIN temp_commemp emp  
+            ON emp.staff_code = intr.introducer_code
+        LEFT JOIN temp_os_premium balprem
+            ON pol.policy_id = balprem.policy_id AND balprem.row = 1
+        LEFT OUTER JOIN bv_Codedescription cx ON cx.code_table_id = cast(balprem.pay_mode as string) and UPPER(cx.Code_table_name) = 'T_BCP_CFG_PAY_MODE'      
+        LEFT JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_quote_info_hist cp
+            ON cp.policy_id = pol.policy_id AND cp.active_record_ind = 'Y'
+ 
+        UNION
+ 
+        SELECT DISTINCT  
+            pol.record_eff_from_date,
+            pol.record_eff_to_date,
+            pol.policy_id AS policy_id,
+            pol.policy_no AS policy_no,  
+            emp.dept_code AS dept_code,  
+            emp.dept_name AS dept_name,
+            CASE
+                WHEN pol.product_code IN ('GPD') THEN 'PAID'
+                ELSE pol.product_code
+            END AS product_code,
+            pol.product_name AS product_name,
+            intr.introducer_code AS introducer_code,  
+            intr.introducer_name AS introducer_name,
+            agt.agent_name AS agent_name,  
+            agt.agent_code AS agent_code,  
+            pol.issue_date AS issue_date,  
+            pol.policy_effective_date AS eff_date,
+            pol.policy_expiry_date AS exp_date,
+            cp.campaign_code AS campaign_code,
+            pol.prem_with_gst AS premium,
+            pol.prem_without_gst AS prem_without_gst,
+            balprem.amt_outstanding AS os_premium,
+            CASE
+                WHEN pol.biz_type = '2' THEN 1
+                ELSE 0
+            END AS renewed_count,
+            CASE
+                WHEN pol.biz_type = '3' THEN 'ENDORSEMENT'
+                WHEN pol.biz_type = '4' THEN 'CANCELLATION'
+                ELSE ''
+            END AS biz_type_name,
+            cd.Code_table_desc as PAYMENT_MODE,
+            DATE('{run_date}') AS Run_Date,
+            emp.section AS section,
+            pol.endo_id AS endoid,
+            pol.endorsement_date AS endo_date,
+            pol.biz_type AS biztype,
+            pol.cancelled_date AS cancelled_date,
+            DATEDIFF(DAY, pol.issue_date, pol.cancelled_date) AS days_issue,
+            pol.cancel_type_id AS cancel_type_id,
+            pol.cancel_type_desc AS cancel_type_desc,
+            pol.cancel_reason_id AS cancel_reason_id,
+            pol.cancel_reason_desc AS cancel_reason_desc,
+            CASE
+                WHEN pt.pty_category = 0 THEN indi.nric
+                ELSE co.reg_no
+            END AS PH_NRIC,
+            CASE
+                WHEN pt.pty_category = 0 THEN indi.name
+                ELSE co.name
+            END AS PH_Name,
+            pol.previous_policy_no AS previous_policy_no,
+            pol.replace_reason AS replace_reason,
+            pol.replace_reason_desc AS replace_reason_desc
+        FROM temp_tmpPol pol
+        JOIN bv_agent agt
+            ON agt.agreement_id = pol.agreement_id
+        JOIN fnAgtGetCateGroup fnagt
+        ON agt.agent_code = fnagt.agent_code
+        AND agt.agent_cate = fnagt.agent_cate
+        AND agt.team_code = fnagt.team_code
+        AND agt.branch_code = fnagt.branch_code    
+        JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_policy_gen_cust_hist cust
+            ON cust.policy_id = pol.policy_id AND cust.payer_flag = 1 AND cust.active_record_ind = 'Y'
+        JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_pty_hist pt
+            ON cust.party_id = pt.pty_id AND pt.active_record_ind = 'Y'
+        LEFT JOIN bv_indivcustomer indi
+            ON indi.pty_id = pt.pty_id
+        LEFT JOIN bv_cocustomer co
+            ON co.pty_id = pt.pty_id
+        LEFT JOIN bv_introducer intr
+            ON pol.policy_id = intr.policy_id
+        LEFT JOIN temp_commemp emp
+            ON emp.staff_code = intr.introducer_code
+        LEFT JOIN temp_os_premium balprem
+            ON pol.policy_id = balprem.policy_id AND balprem.row = 1
+        LEFT OUTER JOIN bv_Codedescription cd ON cd.code_table_id = cast(balprem.pay_mode as string) and UPPER(cd.Code_table_name) = 'T_BCP_CFG_PAY_MODE'    
+        LEFT JOIN {conf['CATALOG_NAME']}.tl_ebgi_def.tb_t_quote_info_hist cp
+            ON cp.policy_id = pol.policy_id  AND cp.active_record_ind = 'Y'
+        WHERE fnagt.agent_cate_group = 'TS' AND SUBSTRING(agt.team_code, 1, 2) IN ('DS', 'DB')
+ 
+    """).createOrReplaceTempView("Final")
+ 
+ 
+ 
+# Insert into final report table
+    spark.sql(f"""
+        INSERT INTO {conf['CATALOG_NAME']}.tl_ebgi_def.tb_rpt_sp_sales_endorsement (
+            source_app_code,
+            dml_ind,
+            record_created_date,
+            record_updated_date,
+            record_created_by,
+            record_updated_by,
+            record_eff_from_date,
+            record_eff_to_date,
+            active_record_ind,
+            change_seq,
+            uuid,
+            business_key
+            ,policy_id          
+            ,policy_no          
+            ,dept_code          
+            ,dept_name          
+            ,product_code      
+            ,product_name      
+            ,introducer_name    
+            ,introducer_code    
+            ,agent_name        
+            ,agent_code        
+            ,issue_date        
+            ,eff_date          
+            ,exp_date          
+            ,campaign_code      
+            ,premium            
+            ,os_premium        
+            ,renewed_count      
+            ,biz_type_name      
+            ,payment_mode      
+            ,run_date          
+            ,section            
+            ,endo_id            
+            ,endo_date          
+            ,biz_type          
+            ,cancelled_date    
+            ,days_issue        
+            ,cancel_type_id    
+            ,cancel_type_desc  
+            ,cancel_reason_id  
+            ,cancel_reason_desc
+            ,prem_without_gst  
+            ,ph_nric            
+            ,ph_name            
+            ,previous_policy_no
+            ,replace_reason    
+            ,replace_reason_desc
+        )
+        SELECT DISTINCT
+            'EBGI' AS source_app_code,
+            'I' AS dml_ind,
+            from_utc_timestamp(current_timestamp(), 'Asia/Singapore') AS record_created_date,
+            from_utc_timestamp(current_timestamp(), 'Asia/Singapore') AS record_updated_date,
+            'tds_etl' AS record_created_by,
+            'tds_etl' AS record_updated_by,
+            record_eff_from_date,
+            record_eff_to_date,
+            'Y' AS active_record_ind,
+            CAST(-1 AS DECIMAL(38,0)) AS change_seq,
+             SHA2('EBGI~' || CAST(policy_id AS string) || '~' || CAST(endo_id AS string)   , 256) AS uuid,
+            ('EBGI~' || CAST(policy_id AS string) || '~' || CAST(endo_id AS string) ) AS business_key
+            ,policy_id          
+            ,policy_no          
+            ,dept_code          
+            ,dept_name          
+            ,product_code      
+            ,product_name      
+            ,introducer_name    
+            ,introducer_code    
+            ,agent_name        
+            ,agent_code        
+            ,issue_date        
+            ,eff_date          
+            ,exp_date          
+            ,campaign_code      
+            ,premium            
+            ,os_premium        
+            ,renewed_count      
+            ,biz_type_name      
+            ,payment_mode      
+            ,DATE('{run_date}') AS Run_Date          
+            ,section            
+            ,endo_id            
+            ,endo_date          
+            ,biz_type          
+            ,cancelled_date    
+            ,days_issue        
+            ,cancel_type_id    
+            ,cancel_type_desc  
+            ,cancel_reason_id  
+            ,cancel_reason_desc
+            ,prem_without_gst  
+            ,ph_nric            
+            ,ph_name            
+            ,previous_policy_no
+            ,replace_reason    
+            ,replace_reason_desc
+ 
+ 
+        FROM Final
+    """)
+ 
+except Exception as e:
+    spark.sparkContext._gateway.shutdown_callback_server()
+    spark.stop()
+    raise Exception(f"Spark Exception {e}")    
+ 
