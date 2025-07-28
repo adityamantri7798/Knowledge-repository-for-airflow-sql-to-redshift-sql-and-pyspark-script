@@ -1,0 +1,732 @@
+import os
+from datetime import timedelta, datetime
+from airflow import DAG
+from airflow.models import Variable
+from airflow.operators.dummy import DummyOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.utils.task_group import TaskGroup
+from airflow.sensors.external_task_sensor import ExternalTaskSensor
+
+REDSHIFT_CONNECTION_ID = Variable.get("REDSHIFT_CONNECTION_ID")
+ 
+DEFAULT_ARGS = {
+   "owner": "datalake,eds",
+   "depends_on_past": False,
+   "retries": 5,
+   "retry_delay": timedelta(minutes=2),
+   "catch_up": False,
+   "retry_exponential_backoff": True,
+   "max_retry_delay": timedelta(minutes=10),
+   "conn_id": REDSHIFT_CONNECTION_ID, 
+}
+
+sql_files = {
+    "reference": {
+        "dimcovertypestatus": [
+            '/usr/local/airflow/dags/eds/scripts/dimcovertypestatus/datalake-eds-batch-pipeline-dimcovertypestatus.sql'
+        ],
+        "dimcovertypesubproduct": [
+            '/usr/local/airflow/dags/eds/scripts/dimcovertypesubproduct/datalake-eds-batch-pipeline-dimcovertypesubproduct.sql'
+        ],
+        "dimclaimlevel": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimlevel/datalake-eds-batch-pipeline-dimclaimlevel.sql'
+        ],
+        "dimclaiminjurytype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaiminjurytype/datalake-eds-batch-pipeline-dimclaiminjurytype.sql'
+        ],
+        "dimclaimanttype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimanttype/datalake-eds-batch-pipeline-dimclaimanttype.sql'
+        ],
+		"dimclaimeventstatus": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimeventstatus/datalake-eds-batch-pipeline-dimclaimeventstatus.sql'
+        ],
+		"dimclaimstatus": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimstatus/datalake-eds-batch-pipeline-dimclaimstatus.sql'
+        ],
+		"dimclaimeventtype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimeventtype/datalake-eds-batch-pipeline-dimclaimeventtype.sql'
+        ],
+		"dimclaimtype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimtype/datalake-eds-batch-pipeline-dimclaimtype.sql'
+        ],
+        "dimclaimeventtypemapping": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimeventtypemapping/datalake-eds-batch-pipeline-dimclaimeventtypemapping.sql'
+        ],
+        "dimclaimeventstatusmapping": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimeventstatusmapping/datalake-eds-batch-pipeline-dimclaimeventstatusmapping.sql'
+        ],
+        "dimclaimdamagetype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimdamagetype/datalake-eds-batch-pipeline-dimclaimdamagetype.sql'
+        ],
+        "dimclaimtypemapping": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimtypemapping/datalake-eds-batch-pipeline-dimclaimtypemapping.sql'
+        ],
+        "dimclaimstatusmapping": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimstatusmapping/datalake-eds-batch-pipeline-dimclaimstatusmapping.sql'
+        ],
+        "dimclaimsource": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimsource/datalake-eds-batch-pipeline-dimclaimsource.sql'
+        ],
+        "dimclaimreservetype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimreservetype/datalake-eds-batch-pipeline-dimclaimreservetype.sql'
+        ],
+        "dimclaimpaymenttype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimpaymenttype/datalake-eds-batch-pipeline-dimclaimpaymenttype.sql'
+        ],
+        "dimclaimpaymentstatus": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimpaymentstatus/datalake-eds-batch-pipeline-dimclaimpaymentstatus.sql'
+        ],
+        "dimclaimpaymentstatusmapping": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimpaymentstatusmapping/datalake-eds-batch-pipeline-dimclaimpaymentstatusmapping.sql'
+        ],
+		"dimdiagnosis": [
+            '/usr/local/airflow/dags/eds/scripts/dimdiagnosis/datalake-eds-batch-pipeline-dimdiagnosis-stage.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimdiagnosis/datalake-eds-batch-pipeline-dimdiagnosis-merge.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimdiagnosis/datalake-eds-batch-pipeline-dimdiagnosis-audit.sql'
+        ],
+		"diminsuredrelationship": [
+            '/usr/local/airflow/dags/eds/scripts/diminsuredrelationship/datalake-eds-batch-pipeline-diminsuredrelationship.sql'
+        ],
+		"dimprocedure": [
+            '/usr/local/airflow/dags/eds/scripts/dimprocedure/datalake-eds-batch-pipeline-dimprocedure-stage.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimprocedure/datalake-eds-batch-pipeline-dimprocedure-merge.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimprocedure/datalake-eds-batch-pipeline-dimprocedure-audit.sql'
+        ],
+		"dimproposalstatus": [
+            '/usr/local/airflow/dags/eds/scripts/dimproposalstatus/datalake-eds-batch-pipeline-dimproposalstatus.sql'
+        ],
+		"dimtranscode": [
+            '/usr/local/airflow/dags/eds/scripts/dimtranscode/datalake-eds-batch-pipeline-dimtranscode.sql'
+        ],
+		"dimsaleshierarchy": [
+            '/usr/local/airflow/dags/eds/scripts/dimsaleshierarchy/datalake-eds-batch-pipeline-dimsaleshierarchy.sql'
+        
+		]
+        
+    },
+    "ebli" : {
+        "dimpolicyaddress": [
+            "/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebli-stage.sql",
+            "/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebli-merge.sql",
+            "/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebli-audit.sql"
+        ],
+        "dimclaim": [
+            "/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebli-stage.sql",
+            "/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebli-merge.sql",
+            "/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebli-audit.sql"
+        ],
+        "factclaimpayment": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebli-audit.sql'
+        ],
+        "dimfundcode": [
+            '/usr/local/airflow/dags/eds/scripts/dimfundcode/datalake-eds-batch-pipeline-dimfundcode-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimfundcode/datalake-eds-batch-pipeline-dimfundcode-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimfundcode/datalake-eds-batch-pipeline-dimfundcode-ebli-audit.sql'
+        ],
+        "dimfundprice": [
+            '/usr/local/airflow/dags/eds/scripts/dimfundprice/datalake-eds-batch-pipeline-dimfundprice-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimfundprice/datalake-eds-batch-pipeline-dimfundprice-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimfundprice/datalake-eds-batch-pipeline-dimfundprice-ebli-audit.sql'
+        ],
+        "factpolicypayment": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicypayment/datalake-eds-batch-pipeline-factpolicypayment-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicypayment/datalake-eds-batch-pipeline-factpolicypayment-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicypayment/datalake-eds-batch-pipeline-factpolicypayment-ebli-audit.sql'
+        ],
+        "factpolicyaccumulatefundunit": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicyaccumulatefundunit/datalake-eds-batch-pipeline-factpolicyaccumulatefundunit-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyaccumulatefundunit/datalake-eds-batch-pipeline-factpolicyaccumulatefundunit-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyaccumulatefundunit/datalake-eds-batch-pipeline-factpolicyaccumulatefundunit-ebli-audit.sql'
+        ],
+        "factpolicyannuity": [
+			"/usr/local/airflow/dags/eds/scripts/factpolicyannuity/datalake-eds-batch-pipeline-factpolicyannuity-ebli-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factpolicyannuity/datalake-eds-batch-pipeline-factpolicyannuity-ebli-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factpolicyannuity/datalake-eds-batch-pipeline-factpolicyannuity-ebli-audit.sql"
+            ],
+        "factpolicyfee": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicyfee/datalake-eds-batch-pipeline-factpolicyfee-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyfee/datalake-eds-batch-pipeline-factpolicyfee-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyfee/datalake-eds-batch-pipeline-factpolicyfee-ebli-audit.sql'
+            ],
+            "factpolicyfundtransaction": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicyfundtransaction/datalake-eds-batch-pipeline-factpolicyfundtransaction-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyfundtransaction/datalake-eds-batch-pipeline-factpolicyfundtransaction-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyfundtransaction/datalake-eds-batch-pipeline-factpolicyfundtransaction-ebli-audit.sql'
+            ],
+         "factclaimcase": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimcase/datalake-eds-batch-pipeline-factclaimcase-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimcase/datalake-eds-batch-pipeline-factclaimcase-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimcase/datalake-eds-batch-pipeline-factclaimcase-ebli-audit.sql'
+            ],
+        "dimclaimcase": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimcase/datalake-eds-batch-pipeline-dimclaimcase-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimclaimcase/datalake-eds-batch-pipeline-dimclaimcase-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimclaimcase/datalake-eds-batch-pipeline-dimclaimcase-ebli-audit.sql'
+            ],
+        "dimclaimproduct": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimproduct/datalake-eds-batch-pipeline-dimclaimproduct-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimclaimproduct/datalake-eds-batch-pipeline-dimclaimproduct-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimclaimproduct/datalake-eds-batch-pipeline-dimclaimproduct-ebli-audit.sql'
+            ],
+        "factclaimproduct": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimproduct/datalake-eds-batch-pipeline-factclaimproduct-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimproduct/datalake-eds-batch-pipeline-factclaimproduct-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factclaimproduct/datalake-eds-batch-pipeline-factclaimproduct-ebli-audit.sql'
+            ],
+        "dimcrscustomer": [
+            '/usr/local/airflow/dags/eds/scripts/dimcrscustomer/datalake-eds-batch-pipeline-dimcrscustomer-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimcrscustomer/datalake-eds-batch-pipeline-dimcrscustomer-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimcrscustomer/datalake-eds-batch-pipeline-dimcrscustomer-ebli-audit.sql'
+            ],
+        "factpolicysurrendervalue": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicysurrendervalue/datalake-eds-batch-pipeline-factpolicysurrendervalue-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicysurrendervalue/datalake-eds-batch-pipeline-factpolicysurrendervalue-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicysurrendervalue/datalake-eds-batch-pipeline-factpolicysurrendervalue-ebli-audit.sql'
+            ],
+        "factpolicyloan": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicyloan/datalake-eds-batch-pipeline-factpolicyloan-ebli-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyloan/datalake-eds-batch-pipeline-factpolicyloan-ebli-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicyloan/datalake-eds-batch-pipeline-factpolicyloan-ebli-audit.sql'
+            ]
+
+    },
+    "ebgi": {
+        "dimpolicyaddress": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyaddress/datalake-eds-batch-pipeline-dimpolicyaddress-ebgi-audit.sql'
+        ],
+        "dimpolicyncd": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyncd/datalake-eds-batch-pipeline-dimpolicyncd-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyncd/datalake-eds-batch-pipeline-dimpolicyncd-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicyncd/datalake-eds-batch-pipeline-dimpolicyncd-ebgi-audit.sql'
+        ],
+        "dimclaim": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-ebgi-audit.sql'
+        ],
+        "dimclaimthirdparty": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimthirdparty/datalake-eds-batch-pipeline-dimclaimthirdparty-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaimthirdparty/datalake-eds-batch-pipeline-dimclaimthirdparty-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaimthirdparty/datalake-eds-batch-pipeline-dimclaimthirdparty-ebgi-audit.sql'
+        ],
+        "dimcovertype": [
+            '/usr/local/airflow/dags/eds/scripts/dimcovertype/datalake-eds-batch-pipeline-dimcovertype-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimcovertype/datalake-eds-batch-pipeline-dimcovertype-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimcovertype/datalake-eds-batch-pipeline-dimcovertype-ebgi-audit.sql'
+        ],
+        "dimtravelpolicy": [
+            '/usr/local/airflow/dags/eds/scripts/dimtravelpolicy/datalake-eds-batch-pipeline-dimtravelpolicy-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimtravelpolicy/datalake-eds-batch-pipeline-dimtravelpolicy-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimtravelpolicy/datalake-eds-batch-pipeline-dimtravelpolicy-ebgi-audit.sql'
+        ],
+        "dimvehicledriver": [
+            '/usr/local/airflow/dags/eds/scripts/dimvehicledriver/datalake-eds-batch-pipeline-dimvehicledriver-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimvehicledriver/datalake-eds-batch-pipeline-dimvehicledriver-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimvehicledriver/datalake-eds-batch-pipeline-dimvehicledriver-ebgi-audit.sql'
+        ],
+        "dimvehicleinsured": [
+            '/usr/local/airflow/dags/eds/scripts/dimvehicleinsured/datalake-eds-batch-pipeline-dimvehicleinsured-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimvehicleinsured/datalake-eds-batch-pipeline-dimvehicleinsured-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimvehicleinsured/datalake-eds-batch-pipeline-dimvehicleinsured-ebgi-audit.sql'
+        ],
+        "dimclaimbenefittype": [
+            '/usr/local/airflow/dags/eds/scripts/dimclaimbenefittype/datalake-eds-batch-pipeline-dimclaimbenefittype-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaimbenefittype/datalake-eds-batch-pipeline-dimclaimbenefittype-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimclaimbenefittype/datalake-eds-batch-pipeline-dimclaimbenefittype-ebgi-audit.sql'
+        ],
+        "factclaim": [
+            "/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-ebgi-stage.sql",
+            "/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-ebgi-merge.sql",
+            "/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-ebgi-audit.sql"
+        ],
+        "factclaimpayment": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimpayment/datalake-eds-batch-pipeline-factclaimpayment-ebgi-audit.sql'
+        ],
+        "factclaimrecovery": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimrecovery/datalake-eds-batch-pipeline-factclaimrecovery-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimrecovery/datalake-eds-batch-pipeline-factclaimrecovery-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimrecovery/datalake-eds-batch-pipeline-factclaimrecovery-ebgi-audit.sql'
+        ],
+        "factclaimreserve": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserve/datalake-eds-batch-pipeline-factclaimreserve-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserve/datalake-eds-batch-pipeline-factclaimreserve-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserve/datalake-eds-batch-pipeline-factclaimreserve-ebgi-audit.sql'
+        ],
+        "factclaimreserverecovery": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserverecovery/datalake-eds-batch-pipeline-factclaimreserverecovery-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserverecovery/datalake-eds-batch-pipeline-factclaimreserverecovery-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factclaimreserverecovery/datalake-eds-batch-pipeline-factclaimreserverecovery-ebgi-audit.sql'
+        ],
+        "dimsubcovertype": [
+            '/usr/local/airflow/dags/eds/scripts/dimsubcovertype/datalake-eds-batch-pipeline-dimsubcovertype-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimsubcovertype/datalake-eds-batch-pipeline-dimsubcovertype-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimsubcovertype/datalake-eds-batch-pipeline-dimsubcovertype-ebgi-audit.sql'
+        ],
+        "factsubcovertype": [
+            '/usr/local/airflow/dags/eds/scripts/factsubcovertype/datalake-eds-batch-pipeline-factsubcovertype-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factsubcovertype/datalake-eds-batch-pipeline-factsubcovertype-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factsubcovertype/datalake-eds-batch-pipeline-factsubcovertype-ebgi-audit.sql'
+        ],
+        "dimquotation": [
+            '/usr/local/airflow/dags/eds/scripts/dimquotation/datalake-eds-batch-pipeline-dimquotation-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimquotation/datalake-eds-batch-pipeline-dimquotation-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimquotation/datalake-eds-batch-pipeline-dimquotation-ebgi-audit.sql'
+        ],
+        "factquotation": [
+            '/usr/local/airflow/dags/eds/scripts/factquotation/datalake-eds-batch-pipeline-factquotation-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factquotation/datalake-eds-batch-pipeline-factquotation-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factquotation/datalake-eds-batch-pipeline-factquotation-ebgi-audit.sql'
+        ],
+        "dimpolicydiscount": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicydiscount/datalake-eds-batch-pipeline-dimpolicydiscount-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicydiscount/datalake-eds-batch-pipeline-dimpolicydiscount-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicydiscount/datalake-eds-batch-pipeline-dimpolicydiscount-ebgi-audit.sql'
+        ],
+        "dimclaimant": [
+			"/usr/local/airflow/dags/eds/scripts/dimclaimant/datalake-eds-batch-pipeline-dimclaimant-ebgi-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaimant/datalake-eds-batch-pipeline-dimclaimant-ebgi-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaimant/datalake-eds-batch-pipeline-dimclaimant-ebgi-audit.sql"
+        ],
+        "dimclaimwitness": [
+			"/usr/local/airflow/dags/eds/scripts/dimclaimwitness/datalake-eds-batch-pipeline-dimclaimwitness-ebgi-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaimwitness/datalake-eds-batch-pipeline-dimclaimwitness-ebgi-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaimwitness/datalake-eds-batch-pipeline-dimclaimwitness-ebgi-audit.sql"
+        ],
+        "factamountclaimed": [
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-ebgi-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-ebgi-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-ebgi-audit.sql"
+        ],
+        "factcovertype": [
+            '/usr/local/airflow/dags/eds/scripts/factcovertype/datalake-eds-batch-pipeline-factcovertype-ebgi-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factcovertype/datalake-eds-batch-pipeline-factcovertype-ebgi-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factcovertype/datalake-eds-batch-pipeline-factcovertype-ebgi-audit.sql'
+        ]
+        
+         
+    },
+    "isis": {
+        "dimpolicy": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-isis-audit.sql'
+        ],
+        "dimpolicycovereditem": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-isis-audit.sql'
+        ],
+        "factpolicy": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-isis-audit.sql'
+        ],
+        "factpolicycovereditem": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-isis-audit.sql'
+        ],
+        "diminsuredentity": [
+            '/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-isis-audit.sql'
+        ],
+        "dimpolicybenefit": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicybenefit/datalake-eds-batch-pipeline-dimpolicybenefit-isis-stage.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicybenefit/datalake-eds-batch-pipeline-dimpolicybenefit-isis-merge.sql',
+            '/usr/local/airflow/dags/eds/scripts/dimpolicybenefit/datalake-eds-batch-pipeline-dimpolicybenefit-isis-audit.sql'
+        ],
+		"dimterminatereason": [
+            '/usr/local/airflow/dags/eds/scripts/dimterminatereason/datalake-eds-batch-pipeline-dimterminatereason-stage.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimterminatereason/datalake-eds-batch-pipeline-dimterminatereason-merge.sql',
+			'/usr/local/airflow/dags/eds/scripts/dimterminatereason/datalake-eds-batch-pipeline-dimterminatereason-audit.sql'
+        ],
+		"factclaimbenefit": [
+            '/usr/local/airflow/dags/eds/scripts/factclaimbenefit/datalake-eds-batch-pipeline-factclaimbenefit-isis-stage.sql',
+			'/usr/local/airflow/dags/eds/scripts/factclaimbenefit/datalake-eds-batch-pipeline-factclaimbenefit-isis-merge.sql',
+			'/usr/local/airflow/dags/eds/scripts/factclaimbenefit/datalake-eds-batch-pipeline-factclaimbenefit-isis-audit.sql'
+        ],
+        "factamountclaimed": [
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factamountclaimed/datalake-eds-batch-pipeline-factamountclaimed-isis-audit.sql"
+        ],
+        "dimisclaim": [
+			"/usr/local/airflow/dags/eds/scripts/dimisclaim/datalake-eds-batch-pipeline-dimisclaim-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimisclaim/datalake-eds-batch-pipeline-dimisclaim-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimisclaim/datalake-eds-batch-pipeline-dimisclaim-isis-audit.sql"
+        ],
+        "dimclaim": [
+			"/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimclaim/datalake-eds-batch-pipeline-dimclaim-isis-audit.sql"
+        ],
+        "factissubclaim": [
+			"/usr/local/airflow/dags/eds/scripts/factissubclaim/datalake-eds-batch-pipeline-factissubclaim-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factissubclaim/datalake-eds-batch-pipeline-factissubclaim-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factissubclaim/datalake-eds-batch-pipeline-factissubclaim-isis-audit.sql"
+        ],
+        "factclaimprocedure": [
+			"/usr/local/airflow/dags/eds/scripts/factclaimprocedure/datalake-eds-batch-pipeline-factclaimprocedure-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factclaimprocedure/datalake-eds-batch-pipeline-factclaimprocedure-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factclaimprocedure/datalake-eds-batch-pipeline-factclaimprocedure-isis-audit.sql"
+        ],
+             "factisclaim": [
+			"/usr/local/airflow/dags/eds/scripts/factisclaim/datalake-eds-batch-pipeline-factisclaim-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factisclaim/datalake-eds-batch-pipeline-factisclaim-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factisclaim/datalake-eds-batch-pipeline-factisclaim-isis-audit.sql"
+        ],
+         "factclaim": [
+			"/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factclaim/datalake-eds-batch-pipeline-factclaim-isis-audit.sql"
+        ],
+         "factproposalcovereditem": [
+			"/usr/local/airflow/dags/eds/scripts/factproposalcovereditem/datalake-eds-batch-pipeline-factproposalcovereditem-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factproposalcovereditem/datalake-eds-batch-pipeline-factproposalcovereditem-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factproposalcovereditem/datalake-eds-batch-pipeline-factproposalcovereditem-isis-audit.sql"
+        ],
+        "dimproposalcovereditem": [
+			"/usr/local/airflow/dags/eds/scripts/dimproposalcovereditem/datalake-eds-batch-pipeline-dimproposalcovereditem-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimproposalcovereditem/datalake-eds-batch-pipeline-dimproposalcovereditem-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimproposalcovereditem/datalake-eds-batch-pipeline-dimproposalcovereditem-isis-audit.sql"
+        ],
+         "dimproposal": [
+			"/usr/local/airflow/dags/eds/scripts/dimproposal/datalake-eds-batch-pipeline-dimproposal-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimproposal/datalake-eds-batch-pipeline-dimproposal-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/dimproposal/datalake-eds-batch-pipeline-dimproposal-isis-audit.sql"
+        ],
+         "factproposal": [
+			"/usr/local/airflow/dags/eds/scripts/factproposal/datalake-eds-batch-pipeline-factproposal-isis-stage.sql",
+			"/usr/local/airflow/dags/eds/scripts/factproposal/datalake-eds-batch-pipeline-factproposal-isis-merge.sql",
+			"/usr/local/airflow/dags/eds/scripts/factproposal/datalake-eds-batch-pipeline-factproposal-isis-audit.sql"
+        ]
+        
+    },
+    "imed": {
+        "dimpolicy": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mcs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mcs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mcs-audit.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mhs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mhs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicy/datalake-eds-batch-pipeline-dimpolicy-imed-mhs-audit.sql'     
+        ],
+        "dimpolicycovereditem": [
+            '/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mcs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mcs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mcs-audit.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mhs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mhs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/dimpolicycovereditem/datalake-eds-batch-pipeline-dimpolicycovereditem-imed-mhs-audit.sql'   
+        ],
+        "factpolicy": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mcs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mcs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mcs-audit.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mhs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mhs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicy/datalake-eds-batch-pipeline-factpolicy-imed-mhs-audit.sql'   
+        ],
+        "factpolicycovereditem": [
+            '/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mcs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mcs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mcs-audit.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mhs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mhs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/factpolicycovereditem/datalake-eds-batch-pipeline-factpolicycovereditem-imed-mhs-audit.sql'   
+        ],
+        "diminsuredentity": [
+            '/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mcs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mcs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mcs-audit.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mhs-stage.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mhs-merge.sql'
+            ,'/usr/local/airflow/dags/eds/scripts/diminsuredentity/datalake-eds-batch-pipeline-diminsuredentity-imed-mhs-audit.sql'   
+        ]
+    }
+}
+
+
+with DAG(
+   dag_id= "datalake-eds-batch-pipeline-master2_dev",
+   description="",
+   default_args=DEFAULT_ARGS,
+   start_date= datetime(2024, 8, 22),
+   schedule_interval=None,
+   tags=[""],
+   catchup=False,
+   max_active_tasks=20,
+   is_paused_upon_creation=False,
+) as dag:
+
+    start = DummyOperator(task_id='start')
+    end = DummyOperator(task_id='end')
+    
+    sensor_master1 = ExternalTaskSensor(
+        task_id='external_sensor_task_master1',
+        external_dag_id='datalake-eds-batch-pipeline-master1',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+    sensor_ebgi_batch = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_ebgi-batch',
+        external_dag_id='datalake-tds-batch-pipeline-ebgi-batch',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+    sensor_ebli_2 = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_ebli_group2',
+        external_dag_id='datalake-tds-batch-pipeline-ebli-group2',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )                                       
+    sensor_isis = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_isis',
+        external_dag_id='datalake-tds-batch-pipeline-isis',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+    sensor_wbcs = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_wbcs',
+        external_dag_id='datalake-tds-batch-pipeline-wbcs',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+    sensor_imed = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_imed',
+        external_dag_id='datalake-tds-batch-pipeline-imed',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+    sensor_ffa = ExternalTaskSensor(
+        task_id='external_sensor_task_tds_ffa',
+        external_dag_id='datalake-tds-batch-pipeline-ffa-group1',  # Specify the DAG  ID
+        external_task_id='end',  # Specify the task in DAG  to wait for
+        poke_interval=300,  # How often to check if the task is complete (in seconds)  
+        timeout=60 * 60 * 8,  # Set a timeout (in seconds) for the sensor, e.g., 2 hours
+        dag=dag,
+    )
+    
+
+    # Function to create reference tasks
+    def create_sequential_tasks(task_group, sql_files, dim_name):
+        previous_task = None
+        for sql_file in sql_files:
+            with open(sql_file, 'r') as sql_file_handle:
+                sql = sql_file_handle.read()
+                task_name = f'{sql_file.split("/")[-1].replace(".sql","")}'
+    
+            task = SQLExecuteQueryOperator(
+                task_id=task_name,
+                sql=sql,
+                split_statements=True,
+                task_group=task_group
+            )
+            
+            if previous_task:
+                previous_task >> task
+            previous_task = task
+        return previous_task
+
+    # Create reference task group
+    with TaskGroup(group_id="reference") as reference_group:
+        independent_tasks = []
+        independent_tables = ['dimcovertypestatus','dimcovertypesubproduct','dimclaimlevel','dimclaiminjurytype','dimclaimanttype','dimclaimeventstatus','dimclaimstatus','dimclaimeventtype','dimclaimtype','dimclaimdamagetype','dimclaimsource','dimclaimreservetype','dimclaimpaymenttype','dimclaimpaymentstatus','dimdiagnosis','diminsuredrelationship','dimprocedure','dimproposalstatus','dimtranscode','dimsaleshierarchy']
+        
+        for table in independent_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["reference"][table], table)
+                independent_tasks.append(table_group)
+        
+        dependent_tasks = []
+        dependent_tables = ['dimclaimeventtypemapping','dimclaimeventstatusmapping','dimclaimtypemapping','dimclaimstatusmapping','dimclaimpaymentstatusmapping']
+        
+        for table in dependent_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["reference"][table], table)
+                dependent_tasks.append(table_group)
+        
+        for independent_tables in independent_tasks:
+            for dependent_table in dependent_tasks:
+                independent_tables >> dependent_table
+                
+    # Create ebli task group
+    with TaskGroup(group_id="ebli") as ebli_group:
+        # Group 1: Create task groups for dimpolicy and dimproposal
+        group1_tasks = []
+        group1_tables = ['dimpolicyaddress','dimclaim','dimfundcode','dimcrscustomer','dimclaimcase','factpolicypayment','factpolicyannuity','factpolicyfee','factpolicyloan','factpolicysurrendervalue']
+        
+        for table in group1_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebli"][table], table)
+                group1_tasks.append(table_group)
+
+        # Group 2: Create task groups for final parallel tasks
+        middle_groups = []
+        middle_tables = ['factclaimpayment','dimfundprice','dimclaimproduct','factclaimcase','factpolicyfundtransaction']
+        
+        for table in middle_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebli"][table], table)
+                middle_groups.append(table_group)
+                
+         # Group 3: Create task groups for final parallel tasks
+        final_groups = []
+        final_tables = ['factpolicyaccumulatefundunit','factclaimproduct']
+        
+        for table in final_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebli"][table], table)
+                final_groups.append(table_group)      
+
+        # Set up dependencies between groups
+        for group1 in group1_tasks:
+            for middle_group in middle_groups:
+                group1 >> middle_group
+                
+        for middle_group in middle_groups:
+            for final_group in final_groups:
+                middle_group >> final_group
+                
+                
+    # Create ebgi task group
+    with TaskGroup(group_id="ebgi") as ebgi_group:
+        # Group 1: Create task groups for dimpolicy and dimproposal
+        group1_tasks = []
+        group1_tables = ['dimpolicyaddress','dimpolicyncd','dimclaim','dimclaimthirdparty','dimcovertype','dimtravelpolicy','dimvehicleinsured','dimvehicledriver','dimpolicydiscount','dimquotation']
+        
+        for table in group1_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebgi"][table], table)
+                group1_tasks.append(table_group)
+
+        # Group 2: Create task groups for middle tables
+        middle_groups = []
+        middle_tables = ['dimclaimbenefittype','dimsubcovertype','dimclaimant','dimclaimwitness','factclaim','factquotation','factamountclaimed','factcovertype']
+
+        for table in middle_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebgi"][table], table)
+                middle_groups.append(table_group)
+
+        # Group 3: Create task groups for final parallel tasks
+        final_groups = []
+        final_tables = ['factclaimpayment','factclaimreserve','factclaimrecovery','factclaimreserverecovery','factsubcovertype']
+        
+        for table in final_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["ebgi"][table], table)
+                final_groups.append(table_group)
+
+        # Set up dependencies between groups
+        for group1 in group1_tasks:
+            for middle_group in middle_groups:
+                group1 >> middle_group
+                
+        for middle_group in middle_groups:
+            for final_group in final_groups:
+                middle_group >> final_group
+    
+    # Create isis task group
+    with TaskGroup(group_id="isis") as isis_group:
+        # Group 1: Create task groups for dimpolicy and dimproposal
+        group1_tasks = []
+        group1_tables = ['dimpolicy','dimpolicybenefit','dimproposal']
+        
+        for table in group1_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["isis"][table], table)
+                group1_tasks.append(table_group)
+        
+        # Group 2: Create task groups for middle tables
+        middle_groups = []
+        middle_tables = ['dimpolicycovereditem','dimclaim','factpolicy','factproposal','dimproposalcovereditem']
+
+        for table in middle_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["isis"][table], table)
+                middle_groups.append(table_group)
+
+        # Group 3: Create task groups for final parallel tasks
+        final_groups = []
+        final_tables = ['dimterminatereason','diminsuredentity','dimisclaim','factpolicycovereditem','factissubclaim','factclaimprocedure','factclaimbenefit','factamountclaimed','factisclaim','factclaim','factproposalcovereditem']
+        
+        for table in final_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["isis"][table], table)
+                final_groups.append(table_group)
+
+        # Set up dependencies between groups
+        for group1 in group1_tasks:
+            for middle_group in middle_groups:
+                group1 >> middle_group
+                
+        for middle_group in middle_groups:
+            for final_group in final_groups:
+                middle_group >> final_group
+                
+    # Create imed task group
+    with TaskGroup(group_id="imed") as imed_group:
+        # Group 1: Create task groups for dimpolicy and dimproposal
+        group1_tasks = []
+        group1_tables = ['dimpolicy']
+        
+        for table in group1_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["imed"][table], table)
+                group1_tasks.append(table_group)
+
+        # Group 2: Create task groups for middle tables
+        middle_groups = []
+        middle_tables = ['dimpolicycovereditem','factpolicy']
+
+        for table in middle_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["imed"][table], table)
+                middle_groups.append(table_group)
+
+        # Group 3: Create task groups for final parallel tasks
+        final_groups = []
+        final_tables = ['diminsuredentity','factpolicycovereditem']
+        
+        for table in final_tables:
+            with TaskGroup(group_id=f"{table}") as table_group:
+                create_sequential_tasks(table_group, sql_files["imed"][table], table)
+                final_groups.append(table_group)
+
+        # Set up dependencies between groups
+        for group1 in group1_tasks:
+            for middle_group in middle_groups:
+                group1 >> middle_group
+                
+        for middle_group in middle_groups:
+            for final_group in final_groups:
+                middle_group >> final_group
+
+
+    # Set up the main flow
+    [sensor_master1, sensor_ebgi_batch, sensor_ebli_2, sensor_wbcs, sensor_isis, sensor_imed, sensor_ffa] >> start >> reference_group >> [ebli_group,ebgi_group,isis_group,imed_group] >> end
